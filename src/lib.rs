@@ -92,6 +92,14 @@ impl<'a> AnsiStr<'a> {
             }
         }
 
+        if in_escape {
+            normal = escape;
+        }
+
+        if !normal.is_empty() {
+            string.push(AnsiStrSegment::Normal(&s[normal.clone()]));
+        }
+
         Self(string, s)
     }
 
@@ -211,12 +219,12 @@ impl AnsiString {
             if !in_escape && ch == '\x1b' {
                 if !normal.is_empty() {
                     string.push(AnsiStringSegment::Normal(s[normal.clone()].to_string()));
-                    normal.end = normal.start;
                 }
 
                 in_escape = true;
                 escape.start = i;
                 escape.end = i + 1;
+                normal = escape.clone();
             } else if in_escape && escape.len() == 1 {
                 if ch == '[' {
                     escape.end += 1;
@@ -236,6 +244,14 @@ impl AnsiString {
             } else {
                 normal.end += 1;
             }
+        }
+
+        if in_escape {
+            normal = escape;
+        }
+
+        if !normal.is_empty() {
+            string.push(AnsiStringSegment::Normal(s[normal.clone()].to_string()));
         }
 
         Self(string, s)
@@ -378,6 +394,13 @@ mod test {
         assert_eq!(s.len(), 13);
         assert_eq!(s.ansi_len(), TEST_STRING.len());
         assert!(!s.is_empty());
+
+        let a = AnsiStr::new("a");
+        assert_eq!(a.len(), 1, "\"a\".len() != 1 {a:?}",);
+
+        assert_eq!(AnsiStr::new("\x1b[0m").len(), 0, "escape_only.len() != 0");
+
+        assert_eq!(AnsiStr::new("").len(), 0, "empty.len() != 0");
     }
 
     #[test]
