@@ -1,0 +1,10 @@
+[package]
+name = "antsy"
+version = "1.0.0"
+edition = "2021"
+
+license = "MIT"
+authors = ["Kyllingene"]
+description = "Types for handling ANSI strings conveniently."
+repository = "https://github.com/Kyllingene/antsy"
+
