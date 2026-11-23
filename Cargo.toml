@@ -1,12 +1,12 @@
 [package]
 name = "antsy"
 version = "2.0.0"
-edition = "2021"
+edition = "2024"
 
 license = "MIT"
 authors = ["Kyllingene"]
 description = "Types for handling ANSI strings conveniently."
 repository = "https://github.com/Kyllingene/antsy"
 
-[dependencies]
-
+[dev-dependencies]
+pretty_assertions = "1.4"
