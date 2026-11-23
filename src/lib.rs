@@ -64,6 +64,11 @@ impl fmt::Display for Segment<'_> {
 }
 
 /// A method for filtering out [`Segment`]s from a [`FilteredSegments`] iterator.
+///
+/// Note that, due to how [`FilteredSegments`] and [`StringLikeDebug`] interact,
+/// debug formatting a [`FilteredSegments`] with a custom filter, where `Output`
+/// implements `Deref<Target = str>` but has a custom `Debug` impl (such as
+/// `Cow<str>`), can lead to messy output.
 pub trait Filter {
     /// The output type of the filter, to allow transformations.
     type Output<'s>;
@@ -178,7 +183,7 @@ impl<'s, F> FilteredSegments<'s, F> {
     }
 
     /// Use a custom filter on the segments.
-    pub fn filter<NF>(self, filter: F) -> FilteredSegments<'s, F> {
+    pub fn filter<NF>(self, filter: NF) -> FilteredSegments<'s, NF> {
         let Self { inner, next_escape, .. } = self;
         FilteredSegments { inner, filter, next_escape }
     }
@@ -188,7 +193,6 @@ impl<'s, F: Filter> Iterator for FilteredSegments<'s, F> {
     type Item = F::Output<'s>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut end = 0;
         loop {
             if let Some(item) = self.next_escape.take().and_then(|e| self.filter.apply(Segment::Escape(e))) {
                 return Some(item);
@@ -198,31 +202,35 @@ impl<'s, F: Filter> Iterator for FilteredSegments<'s, F> {
                 return None;
             }
 
-            let Some(next) = self.inner[end..].find('\x1b') else {
-                return self.filter.apply(Segment::Plain(core::mem::take(&mut self.inner)));
+            let mut search = 0;
+            let (pos, escape, rest) = loop {
+                let Some(rel) = self.inner[search..].find('\x1b') else {
+                    return self.filter.apply(Segment::Plain(core::mem::take(&mut self.inner)));
+                };
+                let pos = search + rel;
+                match Escape::parse_from(&self.inner[pos..]) {
+                    Some((escape, rest)) => break (pos, escape, rest),
+                    None => search = pos + 1,
+                }
             };
 
-            end += next;
-            let Some((escape, rest)) = Escape::parse_from(&self.inner[next..]) else {
-                continue;
-            };
-
-            let plain = &self.inner[..end];
-            if let Some(item) = self.filter.apply(if plain.is_empty() {
-                self.inner = rest;
-                Segment::Escape(escape)
+            let plain = &self.inner[..pos];
+            self.inner = rest;
+            if plain.is_empty() {
+                if let Some(item) = self.filter.apply(Segment::Escape(escape)) {
+                    return Some(item);
+                }
             } else {
-                self.inner = rest;
                 self.next_escape = Some(escape);
-                Segment::Plain(plain)
-            }) {
-                return Some(item);
+                if let Some(item) = self.filter.apply(Segment::Plain(plain)) {
+                    return Some(item);
+                }
             }
         }
     }
 }
 
-impl<'s, F: Clone + Filter<Output<'s>: fmt::Debug>> fmt::Debug for FilteredSegments<'s, F> {
+impl<'s, F: Clone + Filter<Output<'s>: StringLikeDebug>> fmt::Debug for FilteredSegments<'s, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         debug_no_quotes(self.clone(), f)
     }
@@ -242,8 +250,8 @@ impl<'s, F: Clone + Filter<Output<'s>: fmt::Display>> fmt::Display for FilteredS
 /// A few things to note:
 ///  - Intervening C0 escapes are not permitted, for the sake of heapless parsing.
 ///    This restriction does not apply to ST-terminated payloads.
-///  - C1 controls (`0x9X`) are not valid UTF-8, and are thus not parsed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///  - C1 bytes (`0x9X`) are not valid UTF-8, and are thus not parsed.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Escape<'s> {
     /// The kind of escape.
     ///
@@ -253,6 +261,12 @@ pub struct Escape<'s> {
 
     /// The raw escape string.
     pub raw: &'s str,
+}
+
+impl fmt::Debug for Escape<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.raw)
+    }
 }
 
 impl fmt::Display for Escape<'_> {
@@ -333,10 +347,11 @@ pub enum StEscape {
 }
 
 fn parse_fe(s: &str) -> Option<usize> {
+    let reserved = ['[', ']', 'P', 'X', '^', '_'];
     let inter = (0x20 as char)..=(0x2F as char);
     let fin = (0x30 as char)..=(0x7E as char);
 
-    if s.is_empty() {
+    if reserved.contains(&s.chars().next()?) {
         return None;
     }
 
@@ -426,6 +441,18 @@ fn parse_osc(s: &str) -> Option<usize> {
     }
 
     Some(end)
+}
+
+/// A type whose `Debug` impl produces `Formatter` calls like `str` does.
+pub trait StringLikeDebug: fmt::Debug + sealed::Sealed {}
+impl<T> StringLikeDebug for T where T: fmt::Debug + sealed::Sealed {}
+mod sealed {
+    pub trait Sealed {}
+
+    // Reasonable enough assumption
+    impl<T> Sealed for T where T: core::ops::Deref<Target = str> {}
+
+    impl Sealed for super::Segment<'_> {}
 }
 
 /// Prints a series of strings in debug form, but without the opening/closing quotes.
@@ -554,5 +581,7 @@ mod test {
         assert_eq!(s.segments().escapes().to_string(), "\x1b[38;5;1m\x1b]def\x1b\\\x1bJ");
         assert_eq!(s.segments().plain().to_string(), "abcdefghijkl");
         assert_eq!(format!("{:?}", s.segments()), r#""abc\u{1b}[38;5;1mdef\u{1b}]def\u{1b}\\ghi\u{1b}Jjkl""#);
+
+        assert_eq!("\x1b\n".segments().to_string(), "\x1b\n");
     }
 }
